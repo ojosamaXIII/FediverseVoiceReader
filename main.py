@@ -429,7 +429,11 @@ class TimelineSpeaker:
         return output
 
     def headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self.access_token}", "Accept": "application/json"}
+        return {
+            "Authorization": f"Bearer {self.access_token}",
+            "Accept": "application/json",
+            "User-Agent": HTTP_USER_AGENT,
+        }
 
     @staticmethod
     def is_quote_post(src_status: dict[str, Any], raw_content: str) -> bool:
@@ -456,8 +460,26 @@ class TimelineSpeaker:
             url = f"{self.instance_url}/api/v1/timelines/public"
             params = {"local": "true", "limit": str(self.fetch_limit)}
 
-        res = requests.get(url, headers=self.headers(), params=params, timeout=20)
+        res = requests.get(
+            url,
+            headers=self.headers(),
+            params=params,
+            allow_redirects=False,
+            timeout=20,
+        )
+        if 300 <= res.status_code < 400:
+            location = str(res.headers.get("Location", "")).strip()
+            raise requests.RequestException(
+                f"タイムラインAPIがリダイレクトを返しました ({res.status_code}): "
+                f"{location or '(Locationなし)'}"
+            )
         res.raise_for_status()
+        content_type = str(res.headers.get("Content-Type", "")).lower()
+        if "application/json" not in content_type:
+            snippet = res.text[:180].replace("\r", " ").replace("\n", " ")
+            raise requests.RequestException(
+                f"タイムラインAPI応答がJSONではありません。status={res.status_code} body={snippet}"
+            )
         payload = res.json()
         return payload if isinstance(payload, list) else []
 
