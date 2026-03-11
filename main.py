@@ -1137,11 +1137,13 @@ class App:
         self.log("VOICEVOXの公式ページを開きました。")
 
     def on_start_login(self) -> None:
-        instance = normalize_instance_url(self.instance_var.get())
+        raw_instance = self.instance_var.get().strip()
+        instance = normalize_instance_url(raw_instance)
         if not instance:
             messagebox.showerror("入力エラー", "FediverseサーバーURLを入力してください。")
             return
         self.instance_var.set(instance)
+        self.log(f"OAuthログイン開始: 入力='{raw_instance}' 正規化='{instance}'")
         try:
             self.oauth_client = register_app(instance)
             auth_url = build_authorize_url(self.oauth_client)
