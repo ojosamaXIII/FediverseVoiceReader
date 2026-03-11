@@ -541,7 +541,7 @@ class TimelineSpeaker:
                 try:
                     self.dictionary_regex_rules.append((re.compile(src), dst))
                 except re.error as exc:
-                    self.logger(f"霎樊嶌regex無効: {src} ({exc})")
+                    self.logger(f"正規表現が無効です: {src} ({exc})")
             else:
                 self.dictionary_plain_rules.append((src, dst))
 
@@ -1379,7 +1379,7 @@ class App:
 
         ttk.Label(
             dialog,
-            text="通常: 変換前=変換後 / 正規表現: re:pattern=>replace。先頭#はコメントです。",
+            text="通常: 変換前=変換後 / 正規表現: re:検索パターン=>置換後。先頭#の行はコメントです。",
         ).pack(anchor="w", padx=10, pady=(10, 4))
 
         editor = scrolledtext.ScrolledText(dialog, wrap=tk.WORD)
@@ -1409,14 +1409,14 @@ class App:
         frame = ttk.Frame(dialog, padding=10)
         frame.pack(fill=tk.BOTH, expand=True)
 
-        ttk.Label(frame, text="NGワード (1行1件。部分一致で投稿をスキップ)").grid(
+        ttk.Label(frame, text="NGワード（1行に1件。部分一致した投稿をスキップ）").grid(
             row=0, column=0, sticky="w"
         )
         ng_editor = scrolledtext.ScrolledText(frame, wrap=tk.WORD, height=10)
         ng_editor.grid(row=1, column=0, sticky="nsew", pady=(4, 10))
         ng_editor.insert("1.0", self._line_list_to_text(self.ng_words))
 
-        ttk.Label(frame, text="ミュートアカウント (1行1件。acct/username/display_name)").grid(
+        ttk.Label(frame, text="ミュートアカウント（1行に1件。ユーザーID/ユーザー名/表示名）").grid(
             row=2, column=0, sticky="w"
         )
         mute_editor = scrolledtext.ScrolledText(frame, wrap=tk.WORD, height=10)
