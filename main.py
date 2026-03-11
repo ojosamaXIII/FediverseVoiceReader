@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 import webbrowser
+import wave
 from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
@@ -77,6 +78,12 @@ HTTP_USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/134.0.0.0 Safari/537.36 FediverseVoiceReader/1.0"
 )
+
+
+def contains_url_like(text: str) -> bool:
+    if not text:
+        return False
+    return bool(URL_RE.search(text) or URL_LIKE_RE.search(text))
 
 
 def clean_text(raw_html: str) -> str:
@@ -442,31 +449,6 @@ def clamp_float(value: float, min_value: float, max_value: float) -> float:
     return max(min_value, min(max_value, value))
 
 
-def speak_with_windows_tts(text: str, rate_scale: float, volume_scale: float) -> None:
-    rate_scale = clamp_float(rate_scale, 0.5, 2.0)
-    volume_scale = clamp_float(volume_scale, 0.0, 2.0)
-    # System.Speech Rate is -10..10, Volume is 0..100.
-    win_rate = int(round((rate_scale - 1.0) * 10))
-    win_rate = max(-10, min(10, win_rate))
-    win_volume = int(round(volume_scale * 100))
-    win_volume = max(0, min(100, win_volume))
-    script = (
-        "Add-Type -AssemblyName System.Speech; "
-        "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
-        f"$s.Rate = {win_rate}; "
-        f"$s.Volume = {win_volume}; "
-        "$t = [Console]::In.ReadToEnd(); "
-        "$s.Speak($t);"
-    )
-    subprocess.run(
-        ["powershell.exe", "-NoProfile", "-Command", script],
-        input=text,
-        text=True,
-        check=True,
-        timeout=180,
-    )
-
-
 def fetch_voicevox_speakers(voicevox_url: str) -> list[tuple[str, int]]:
     base = normalize_voicevox_url(voicevox_url)
     res = requests.get(f"{base}/speakers", timeout=10)
@@ -511,6 +493,8 @@ class TimelineSpeaker:
         omit_body_when_cw: bool,
         read_username: bool,
         read_cw: bool,
+        skip_posts_with_url: bool,
+        skip_posts_with_hashtag: bool,
         logger: Callable[[str], None],
     ) -> None:
         self.instance_url = instance_url.rstrip("/")
@@ -536,9 +520,13 @@ class TimelineSpeaker:
         self.omit_body_when_cw = omit_body_when_cw
         self.read_username = read_username
         self.read_cw = read_cw
+        self.skip_posts_with_url = skip_posts_with_url
+        self.skip_posts_with_hashtag = skip_posts_with_hashtag
         self.logger = logger
         self.seen_ids: set[str] = set()
         self.stop_event = threading.Event()
+        self.playback_lock = threading.Lock()
+        self.current_tts_process: subprocess.Popen[str] | None = None
 
     def _build_dictionary_rules(self, entries: list[dict[str, str]]) -> None:
         self.dictionary_plain_rules = []
@@ -725,6 +713,13 @@ class TimelineSpeaker:
                 for word in self.ng_words:
                     if word and word in target:
                         return True, f"NGワード一致: {word}"
+            raw_content = str(src.get("text", "") or "")
+            raw_spoiler = str(src.get("cw", "") or "")
+            raw_target = f"{raw_content}\n{raw_spoiler}"
+            if self.skip_posts_with_url and contains_url_like(raw_target):
+                return True, "URLを含む投稿除外"
+            if self.skip_posts_with_hashtag and "#" in raw_target:
+                return True, "#を含む投稿除外"
             return False, ""
 
         if self.skip_boosts and status.get("reblog"):
@@ -754,16 +749,57 @@ class TimelineSpeaker:
             for word in self.ng_words:
                 if word and word in target:
                     return True, f"NGワード一致: {word}"
+        raw_content = str(src.get("content", "") or "")
+        raw_spoiler = str(src.get("spoiler_text", "") or "")
+        raw_target = f"{raw_content}\n{raw_spoiler}"
+        if self.skip_posts_with_url and contains_url_like(raw_target):
+            return True, "URLを含む投稿除外"
+        if self.skip_posts_with_hashtag and "#" in raw_target:
+            return True, "#を含む投稿除外"
 
         return False, ""
 
     def speak(self, text: str) -> None:
+        if self.stop_event.is_set():
+            return
         if not self.use_voicevox:
-            speak_with_windows_tts(
-                text=text,
-                rate_scale=self.speech_rate,
-                volume_scale=self.speech_volume,
+            rate_scale = clamp_float(self.speech_rate, 0.5, 2.0)
+            volume_scale = clamp_float(self.speech_volume, 0.0, 2.0)
+            # System.Speech Rate is -10..10, Volume is 0..100.
+            win_rate = int(round((rate_scale - 1.0) * 10))
+            win_rate = max(-10, min(10, win_rate))
+            win_volume = int(round(volume_scale * 100))
+            win_volume = max(0, min(100, win_volume))
+            script = (
+                "Add-Type -AssemblyName System.Speech; "
+                "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+                f"$s.Rate = {win_rate}; "
+                f"$s.Volume = {win_volume}; "
+                "$t = [Console]::In.ReadToEnd(); "
+                "$s.Speak($t);"
             )
+            proc = subprocess.Popen(
+                ["powershell.exe", "-NoProfile", "-Command", script],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+            with self.playback_lock:
+                self.current_tts_process = proc
+            try:
+                if proc.stdin:
+                    proc.stdin.write(text)
+                    proc.stdin.close()
+                while proc.poll() is None:
+                    if self.stop_event.is_set():
+                        self._interrupt_current_playback()
+                        break
+                    time.sleep(0.05)
+            finally:
+                with self.playback_lock:
+                    if self.current_tts_process is proc:
+                        self.current_tts_process = None
             return
 
         query_res = requests.post(
@@ -772,6 +808,8 @@ class TimelineSpeaker:
             timeout=20,
         )
         query_res.raise_for_status()
+        if self.stop_event.is_set():
+            return
         query_payload = query_res.json()
         query_payload["speedScale"] = clamp_float(self.speech_rate, 0.5, 2.0)
         query_payload["volumeScale"] = clamp_float(self.speech_volume, 0.0, 2.0)
@@ -783,6 +821,8 @@ class TimelineSpeaker:
             timeout=30,
         )
         synth_res.raise_for_status()
+        if self.stop_event.is_set():
+            return
         wav_bytes = synth_res.content
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             f.write(wav_bytes)
@@ -790,12 +830,44 @@ class TimelineSpeaker:
         try:
             import winsound
 
-            winsound.PlaySound(wav_path, winsound.SND_FILENAME)
+            duration_sec = 0.0
+            with wave.open(wav_path, "rb") as wav_file:
+                frame_rate = wav_file.getframerate()
+                frame_count = wav_file.getnframes()
+                if frame_rate > 0:
+                    duration_sec = frame_count / frame_rate
+            winsound.PlaySound(wav_path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+            deadline = time.monotonic() + max(0.1, duration_sec + 0.3)
+            while time.monotonic() < deadline:
+                if self.stop_event.is_set():
+                    self._interrupt_current_playback()
+                    break
+                time.sleep(0.05)
         finally:
             try:
                 os.remove(wav_path)
             except OSError:
                 pass
+
+    def _interrupt_current_playback(self) -> None:
+        with self.playback_lock:
+            proc = self.current_tts_process
+            self.current_tts_process = None
+        if proc and proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=0.5)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        try:
+            import winsound
+
+            winsound.PlaySound(None, winsound.SND_PURGE)
+        except Exception:
+            pass
 
     def seed_seen(self) -> None:
         for status in self.fetch_timeline():
@@ -823,6 +895,8 @@ class TimelineSpeaker:
                         continue
                     new_items.append(status)
                 for status in reversed(new_items):
+                    if self.stop_event.is_set():
+                        break
                     message = self.build_message(status)
                     self.logger(f"読み上げ: {message}")
                     self.speak(message)
@@ -835,6 +909,7 @@ class TimelineSpeaker:
 
     def stop(self) -> None:
         self.stop_event.set()
+        self._interrupt_current_playback()
 
 
 class App:
@@ -857,6 +932,7 @@ class App:
 
         self._build_ui()
         self._load_from_config()
+        self._bind_runtime_setting_watchers()
         self._drain_log_queue()
         self.root.after(150, self._run_startup_sequence)
 
@@ -939,6 +1015,8 @@ class App:
         self.skip_boosts_var = tk.BooleanVar(value=False)
         self.skip_replies_var = tk.BooleanVar(value=False)
         self.omit_body_when_cw_var = tk.BooleanVar(value=False)
+        self.skip_posts_with_url_var = tk.BooleanVar(value=False)
+        self.skip_posts_with_hashtag_var = tk.BooleanVar(value=False)
         self.auto_start_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(frm, text="ユーザー名を読む", variable=self.read_username_var).grid(
             row=12, column=1, sticky="w"
@@ -949,26 +1027,32 @@ class App:
         ttk.Checkbutton(frm, text="CWありは本文を読まない", variable=self.omit_body_when_cw_var).grid(
             row=16, column=1, sticky="w"
         )
-        ttk.Checkbutton(frm, text="起動時に自動読み上げ開始", variable=self.auto_start_var).grid(
+        ttk.Checkbutton(frm, text="URL入り投稿を除外", variable=self.skip_posts_with_url_var).grid(
             row=17, column=1, sticky="w"
+        )
+        ttk.Checkbutton(frm, text="#入り投稿を除外", variable=self.skip_posts_with_hashtag_var).grid(
+            row=18, column=1, sticky="w"
+        )
+        ttk.Checkbutton(frm, text="起動時に自動読み上げ開始", variable=self.auto_start_var).grid(
+            row=19, column=1, sticky="w"
         )
 
         step_row = ttk.Frame(frm)
-        step_row.grid(row=18, column=0, columnspan=2, pady=(8, 8), sticky="we")
+        step_row.grid(row=20, column=0, columnspan=2, pady=(8, 8), sticky="we")
         ttk.Button(step_row, text="辞書設定", command=self.on_open_dictionary_editor).pack(side=tk.LEFT, padx=4)
         ttk.Button(step_row, text="ミュート/NG設定", command=self.on_open_filter_editor).pack(side=tk.LEFT, padx=4)
         ttk.Button(step_row, text="1) VOICEVOX確認", command=self.on_check_voicevox).pack(side=tk.LEFT, padx=4)
         ttk.Button(step_row, text="2) ログイン開始", command=self.on_start_login).pack(side=tk.LEFT, padx=4)
 
-        ttk.Label(frm, text="認可コード").grid(row=19, column=0, sticky="w")
+        ttk.Label(frm, text="認可コード").grid(row=21, column=0, sticky="w")
         self.auth_code_var = tk.StringVar()
-        ttk.Entry(frm, textvariable=self.auth_code_var, width=64).grid(row=19, column=1, sticky="we")
+        ttk.Entry(frm, textvariable=self.auth_code_var, width=64).grid(row=21, column=1, sticky="we")
         ttk.Button(frm, text="ログイン完了", command=self.on_complete_login).grid(
-            row=20, column=1, sticky="w", pady=(4, 8)
+            row=22, column=1, sticky="w", pady=(4, 8)
         )
 
         run_row = ttk.Frame(frm)
-        run_row.grid(row=21, column=0, columnspan=2, sticky="we", pady=(4, 8))
+        run_row.grid(row=23, column=0, columnspan=2, sticky="we", pady=(4, 8))
         self.start_btn = ttk.Button(run_row, text="3) 読み上げ開始", command=self.on_start_reading)
         self.start_btn.pack(side=tk.LEFT, padx=4)
         self.stop_btn = ttk.Button(run_row, text="停止", command=self.on_stop_reading, state=tk.DISABLED)
@@ -979,13 +1063,51 @@ class App:
         )
 
         self.status_var = tk.StringVar(value="未ログイン")
-        ttk.Label(frm, textvariable=self.status_var).grid(row=22, column=0, columnspan=2, sticky="w")
+        ttk.Label(frm, textvariable=self.status_var).grid(row=24, column=0, columnspan=2, sticky="w")
 
         self.log_widget = scrolledtext.ScrolledText(frm, height=20, wrap=tk.WORD, state=tk.DISABLED)
-        self.log_widget.grid(row=23, column=0, columnspan=2, sticky="nsew")
+        self.log_widget.grid(row=25, column=0, columnspan=2, sticky="nsew")
 
         frm.columnconfigure(1, weight=1)
-        frm.rowconfigure(23, weight=1)
+        frm.rowconfigure(25, weight=1)
+
+    def _bind_runtime_setting_watchers(self) -> None:
+        watched: list[tuple[tk.Variable, str]] = [
+            (self.voicevox_var, "VOICEVOX URL"),
+            (self.speaker_combo_var, "読み上げモデル"),
+            (self.poll_var, "取得間隔"),
+            (self.limit_var, "取得件数"),
+            (self.timeline_kind_var, "タイムライン種別"),
+            (self.speech_rate_var, "読み上げ速度"),
+            (self.speech_volume_var, "読み上げ音量"),
+            (self.speech_pitch_var, "読み上げピッチ"),
+            (self.omit_long_threshold_var, "長文省略しきい値"),
+            (self.read_username_var, "ユーザー名読み上げ"),
+            (self.read_cw_var, "CW読み上げ"),
+            (self.skip_boosts_var, "ブースト除外"),
+            (self.skip_replies_var, "返信除外"),
+            (self.omit_body_when_cw_var, "CW本文省略"),
+            (self.skip_posts_with_url_var, "URL投稿除外"),
+            (self.skip_posts_with_hashtag_var, "#投稿除外"),
+            (self.auto_start_var, "起動時自動読み上げ"),
+            (self.account_combo_var, "選択アカウント"),
+        ]
+        for var, setting_name in watched:
+            var.trace_add(
+                "write",
+                lambda *args, name=setting_name: self._on_runtime_setting_changed(name),
+            )
+
+    def _on_runtime_setting_changed(self, setting_name: str) -> None:
+        self._save_current_config()
+        if not self.worker:
+            return
+        if not (self.worker_thread and self.worker_thread.is_alive()):
+            return
+        if self.worker.stop_event.is_set():
+            return
+        self.log(f"設定変更を検知したため停止: {setting_name}")
+        self.on_stop_reading()
 
     def _current_speaker_id(self) -> int:
         label = self.speaker_combo_var.get()
@@ -1027,6 +1149,8 @@ class App:
             "skip_boosts": self.skip_boosts_var.get(),
             "skip_replies": self.skip_replies_var.get(),
             "omit_body_when_cw": self.omit_body_when_cw_var.get(),
+            "skip_posts_with_url": self.skip_posts_with_url_var.get(),
+            "skip_posts_with_hashtag": self.skip_posts_with_hashtag_var.get(),
             "auto_start_on_launch": self.auto_start_var.get(),
             "read_username": self.read_username_var.get(),
             "read_cw": self.read_cw_var.get(),
@@ -1056,6 +1180,8 @@ class App:
         self.skip_boosts_var.set(bool(cfg.get("skip_boosts", False)))
         self.skip_replies_var.set(bool(cfg.get("skip_replies", False)))
         self.omit_body_when_cw_var.set(bool(cfg.get("omit_body_when_cw", False)))
+        self.skip_posts_with_url_var.set(bool(cfg.get("skip_posts_with_url", False)))
+        self.skip_posts_with_hashtag_var.set(bool(cfg.get("skip_posts_with_hashtag", False)))
         self.auto_start_var.set(bool(cfg.get("auto_start_on_launch", False)))
         self.read_username_var.set(bool(cfg.get("read_username", True)))
         self.read_cw_var.set(bool(cfg.get("read_cw", False)))
@@ -1514,6 +1640,8 @@ class App:
             omit_body_when_cw=self.omit_body_when_cw_var.get(),
             read_username=self.read_username_var.get(),
             read_cw=self.read_cw_var.get(),
+            skip_posts_with_url=self.skip_posts_with_url_var.get(),
+            skip_posts_with_hashtag=self.skip_posts_with_hashtag_var.get(),
             logger=self.log,
         )
         self.worker_thread = threading.Thread(target=self.worker.run, daemon=True)
