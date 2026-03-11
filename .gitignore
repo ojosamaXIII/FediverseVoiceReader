@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.pyo
+
+# Virtual environments
+.venv/
+.venv_old/
+venv/
+
+# Build artifacts
+build/
+*.spec
+*.bak
+*.bak_*
+__fix_*.py
+__repair_*.py
+
+# Dist:
+# keep only the distributable EXE in git
+dist/*
+!dist/FediverseVoiceReader.exe
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
