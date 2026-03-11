@@ -218,11 +218,33 @@ def save_config(payload: dict[str, Any]) -> None:
 @dataclass
 class OAuthClient:
     instance_url: str
+    backend: str
     client_id: str
     client_secret: str
+    session_token: str = ""
 
 
-def register_app(instance_url: str) -> OAuthClient:
+def detect_backend(instance_url: str) -> str:
+    base = normalize_instance_url(instance_url).rstrip("/")
+    if not base:
+        return "mastodon"
+    try:
+        res = requests.post(
+            f"{base}/api/meta",
+            json={"detail": False},
+            headers={"Accept": "application/json", "User-Agent": HTTP_USER_AGENT},
+            timeout=10,
+        )
+        if res.ok:
+            payload = res.json()
+            if isinstance(payload, dict) and "maintainerName" in payload:
+                return "misskey"
+    except requests.RequestException:
+        pass
+    return "mastodon"
+
+
+def register_mastodon_app(instance_url: str) -> OAuthClient:
     base = normalize_instance_url(instance_url).rstrip("/")
     if not base:
         raise ValueError("インスタンスURLが空です。")
@@ -253,12 +275,64 @@ def register_app(instance_url: str) -> OAuthClient:
         ) from exc
     return OAuthClient(
         instance_url=base,
+        backend="mastodon",
         client_id=payload["client_id"],
         client_secret=payload["client_secret"],
     )
 
 
+def register_misskey_app(instance_url: str) -> OAuthClient:
+    base = normalize_instance_url(instance_url).rstrip("/")
+    if not base:
+        raise ValueError("インスタンスURLが空です。")
+    app_res = requests.post(
+        f"{base}/api/app/create",
+        json={
+            "name": "Fediverse Timeline Reader",
+            "description": "Read timeline by TTS",
+            "permission": ["read:account", "read:notes"],
+        },
+        headers={"Accept": "application/json", "User-Agent": HTTP_USER_AGENT},
+        timeout=20,
+    )
+    app_res.raise_for_status()
+    app_payload = app_res.json()
+    app_secret = str(app_payload.get("secret", "")).strip()
+    if not app_secret:
+        raise requests.RequestException("Misskeyアプリ作成に失敗しました。secretが取得できません。")
+
+    sess_res = requests.post(
+        f"{base}/api/auth/session/generate",
+        json={"appSecret": app_secret},
+        headers={"Accept": "application/json", "User-Agent": HTTP_USER_AGENT},
+        timeout=20,
+    )
+    sess_res.raise_for_status()
+    sess_payload = sess_res.json()
+    session_token = str(sess_payload.get("token", "")).strip()
+    authorize_url = str(sess_payload.get("url", "")).strip()
+    if not session_token or not authorize_url:
+        raise requests.RequestException("Misskey認可セッション生成に失敗しました。")
+
+    return OAuthClient(
+        instance_url=base,
+        backend="misskey",
+        client_id=authorize_url,
+        client_secret=app_secret,
+        session_token=session_token,
+    )
+
+
+def register_app(instance_url: str) -> OAuthClient:
+    backend = detect_backend(instance_url)
+    if backend == "misskey":
+        return register_misskey_app(instance_url)
+    return register_mastodon_app(instance_url)
+
+
 def build_authorize_url(client: OAuthClient) -> str:
+    if client.backend == "misskey":
+        return client.client_id
     params = {
         "client_id": client.client_id,
         "scope": "read",
@@ -269,6 +343,22 @@ def build_authorize_url(client: OAuthClient) -> str:
 
 
 def exchange_code_for_token(client: OAuthClient, code: str) -> str:
+    if client.backend == "misskey":
+        if not client.session_token:
+            raise requests.RequestException("Misskey認可セッション情報がありません。")
+        res = requests.post(
+            f"{client.instance_url}/api/auth/session/userkey",
+            json={"appSecret": client.client_secret, "token": client.session_token},
+            headers={"Accept": "application/json", "User-Agent": HTTP_USER_AGENT},
+            timeout=20,
+        )
+        res.raise_for_status()
+        payload = res.json()
+        access_token = str(payload.get("accessToken", "")).strip()
+        if not access_token:
+            raise requests.RequestException("Misskeyアクセストークン取得に失敗しました。")
+        return access_token
+
     res = requests.post(
         f"{client.instance_url}/oauth/token",
         data={
@@ -288,6 +378,25 @@ def exchange_code_for_token(client: OAuthClient, code: str) -> str:
 
 
 def verify_account(instance_url: str, access_token: str) -> str:
+    return verify_account_with_backend(instance_url, access_token, "mastodon")
+
+
+def verify_account_with_backend(instance_url: str, access_token: str, backend: str) -> str:
+    if backend == "misskey":
+        res = requests.post(
+            f"{instance_url.rstrip('/')}/api/i",
+            json={"i": access_token},
+            headers={"Accept": "application/json", "User-Agent": HTTP_USER_AGENT},
+            timeout=20,
+        )
+        res.raise_for_status()
+        account = res.json()
+        username = str(account.get("username", "")).strip()
+        host = str(account.get("host", "")).strip()
+        if username and host:
+            return f"{username}@{host}"
+        return username or "unknown"
+
     res = requests.get(
         f"{instance_url.rstrip('/')}/api/v1/accounts/verify_credentials",
         headers={
@@ -383,6 +492,7 @@ class TimelineSpeaker:
     def __init__(
         self,
         instance_url: str,
+        backend: str,
         access_token: str,
         voicevox_url: str,
         speaker_id: int,
@@ -404,6 +514,7 @@ class TimelineSpeaker:
         logger: Callable[[str], None],
     ) -> None:
         self.instance_url = instance_url.rstrip("/")
+        self.backend = backend
         self.access_token = access_token
         self.voicevox_url = voicevox_url.rstrip("/")
         self.use_voicevox = bool(self.voicevox_url)
@@ -455,6 +566,8 @@ class TimelineSpeaker:
         return output
 
     def headers(self) -> dict[str, str]:
+        if self.backend == "misskey":
+            return {"Accept": "application/json", "User-Agent": HTTP_USER_AGENT}
         return {
             "Authorization": f"Bearer {self.access_token}",
             "Accept": "application/json",
@@ -479,20 +592,32 @@ class TimelineSpeaker:
         return bool(QUOTE_STATUS_URL_RE.search(raw_content or ""))
 
     def fetch_timeline(self) -> list[dict[str, Any]]:
-        if self.timeline_kind == "home":
-            url = f"{self.instance_url}/api/v1/timelines/home"
-            params = {"limit": str(self.fetch_limit)}
+        if self.backend == "misskey":
+            if self.timeline_kind == "home":
+                url = f"{self.instance_url}/api/notes/timeline"
+            else:
+                url = f"{self.instance_url}/api/notes/local-timeline"
+            res = requests.post(
+                url,
+                headers=self.headers(),
+                json={"i": self.access_token, "limit": self.fetch_limit},
+                allow_redirects=False,
+                timeout=20,
+            )
         else:
-            url = f"{self.instance_url}/api/v1/timelines/public"
-            params = {"local": "true", "limit": str(self.fetch_limit)}
-
-        res = requests.get(
-            url,
-            headers=self.headers(),
-            params=params,
-            allow_redirects=False,
-            timeout=20,
-        )
+            if self.timeline_kind == "home":
+                url = f"{self.instance_url}/api/v1/timelines/home"
+                params = {"limit": str(self.fetch_limit)}
+            else:
+                url = f"{self.instance_url}/api/v1/timelines/public"
+                params = {"local": "true", "limit": str(self.fetch_limit)}
+            res = requests.get(
+                url,
+                headers=self.headers(),
+                params=params,
+                allow_redirects=False,
+                timeout=20,
+            )
         if 300 <= res.status_code < 400:
             location = str(res.headers.get("Location", "")).strip()
             raise requests.RequestException(
@@ -510,6 +635,35 @@ class TimelineSpeaker:
         return payload if isinstance(payload, list) else []
 
     def build_message(self, status: dict[str, Any]) -> str:
+        if self.backend == "misskey":
+            src = status.get("renote") or status
+            user_info = src.get("user") or {}
+            user = user_info.get("name") or user_info.get("username") or "unknown"
+            user = clean_text(str(user))
+
+            raw_content = str(src.get("text", "") or "")
+            content = clean_text(raw_content)
+            spoiler = clean_text(str(src.get("cw", "") or ""))
+
+            user = self.apply_dictionary(user)
+            content = self.apply_dictionary(content)
+            spoiler = self.apply_dictionary(spoiler)
+
+            if self.omit_long_threshold > 0 and len(content) > self.omit_long_threshold:
+                content = "以下省略"
+            if spoiler and self.omit_body_when_cw:
+                content = "本文省略"
+
+            parts: list[str] = []
+            if self.read_username:
+                parts.append(user)
+            if status.get("renote"):
+                parts.append("リノート")
+            if spoiler and self.read_cw:
+                parts.append(f"コンテンツ警告 {spoiler}")
+            parts.append(content if content else "本文なし")
+            return "、".join(parts)
+
         src = status.get("reblog") or status
         account = src.get("account") or {}
         user = account.get("display_name") or account.get("username") or "unknown"
@@ -543,6 +697,36 @@ class TimelineSpeaker:
         return "、".join(parts)
 
     def should_skip_status(self, status: dict[str, Any]) -> tuple[bool, str]:
+        if self.backend == "misskey":
+            if self.skip_boosts and status.get("renote"):
+                return True, "リノート除外"
+
+            src = status.get("renote") or status
+            if self.skip_replies and src.get("replyId"):
+                return True, "返信除外"
+
+            user_info = src.get("user") or {}
+            username = str(user_info.get("username", "")).strip()
+            host = str(user_info.get("host", "")).strip()
+            full_acct = f"{username}@{host}" if username and host else username
+            account_candidates = {
+                full_acct.lower(),
+                username.lower(),
+                clean_text(str(user_info.get("name", ""))).strip().lower(),
+            }
+            account_candidates = {x for x in account_candidates if x}
+            if self.muted_accounts and (account_candidates & self.muted_accounts):
+                return True, "ミュートアカウント"
+
+            if self.ng_words:
+                content = clean_text(str(src.get("text", "") or ""))
+                spoiler = clean_text(str(src.get("cw", "") or ""))
+                target = f"{content} {spoiler}".lower()
+                for word in self.ng_words:
+                    if word and word in target:
+                        return True, f"NGワード一致: {word}"
+            return False, ""
+
         if self.skip_boosts and status.get("reblog"):
             return True, "ブースト除外"
 
@@ -920,9 +1104,11 @@ class App:
                 instance_url = str(item.get("instance_url", "")).strip().rstrip("/")
                 access_token = str(item.get("access_token", "")).strip()
                 acct = str(item.get("acct", "")).strip()
+                backend = str(item.get("backend", "mastodon")).strip().lower() or "mastodon"
                 if key and instance_url and access_token:
                     self.accounts[str(key)] = {
                         "instance_url": normalize_instance_url(instance_url),
+                        "backend": backend,
                         "access_token": access_token,
                         "acct": acct,
                     }
@@ -936,6 +1122,7 @@ class App:
                 key = f"@{acct} ({legacy_instance})"
                 self.accounts[key] = {
                     "instance_url": legacy_instance,
+                    "backend": "mastodon",
                     "access_token": legacy_token,
                     "acct": acct,
                 }
@@ -962,11 +1149,12 @@ class App:
             return
         selected = self.accounts[selected_key]
         instance = selected["instance_url"]
+        backend = selected.get("backend", "mastodon")
         token = selected["access_token"]
         if not instance or not token:
             return
         try:
-            acct = verify_account(instance, token)
+            acct = verify_account_with_backend(instance, token, backend)
             self.access_token = token
             self.instance_var.set(instance)
             self.status_var.set(f"保存済みログインを復元: @{acct}")
@@ -997,8 +1185,9 @@ class App:
         self.instance_var.set(account["instance_url"])
         self.access_token = account["access_token"]
         acct = account.get("acct", "")
+        backend = account.get("backend", "mastodon")
         if acct:
-            self.status_var.set(f"アカウント選択: @{acct}")
+            self.status_var.set(f"アカウント選択 ({backend}): @{acct}")
         else:
             self.status_var.set("アカウントを選択しました。")
         self._save_current_config()
@@ -1219,8 +1408,12 @@ class App:
             self.oauth_client = register_app(instance)
             auth_url = build_authorize_url(self.oauth_client)
             webbrowser.open(auth_url)
-            self.status_var.set("ブラウザでログインし、認可コードを貼り付けてください。")
-            self.log("OAuthアプリ登録完了。認可ページを開きました。")
+            if self.oauth_client.backend == "misskey":
+                self.status_var.set("ブラウザで許可後、「ログイン完了」を押してください。")
+                self.log("Misskey認可セッション作成完了。認可ページを開きました。")
+            else:
+                self.status_var.set("ブラウザでログインし、認可コードを貼り付けてください。")
+                self.log("OAuthアプリ登録完了。認可ページを開きました。")
         except requests.RequestException as exc:
             messagebox.showerror("ログイン開始エラー", f"OAuthログインを開始できませんでした。\n{exc}")
             self.log(f"OAuthログイン開始失敗: {exc}")
@@ -1230,24 +1423,27 @@ class App:
             messagebox.showerror("ログインエラー", "先に「ログイン開始」を押してください。")
             return
         code = self.auth_code_var.get().strip()
-        if not code:
+        if self.oauth_client.backend == "mastodon" and not code:
             messagebox.showerror("ログインエラー", "認可コードを貼り付けてください。")
             return
         try:
             token = exchange_code_for_token(self.oauth_client, code)
-            acct = verify_account(self.oauth_client.instance_url, token)
+            acct = verify_account_with_backend(
+                self.oauth_client.instance_url, token, self.oauth_client.backend
+            )
             self.access_token = token
             account_key = f"@{acct} ({self.oauth_client.instance_url})"
             self.accounts[account_key] = {
                 "instance_url": self.oauth_client.instance_url,
+                "backend": self.oauth_client.backend,
                 "access_token": token,
                 "acct": acct,
             }
             self._refresh_account_combo(account_key)
             self.instance_var.set(self.oauth_client.instance_url)
             self._save_current_config()
-            self.status_var.set(f"ログイン完了: @{acct}")
-            self.log(f"ログイン完了: @{acct}")
+            self.status_var.set(f"ログイン完了 ({self.oauth_client.backend}): @{acct}")
+            self.log(f"ログイン完了 ({self.oauth_client.backend}): @{acct}")
         except requests.RequestException as exc:
             messagebox.showerror("ログインエラー", f"認可コードの交換に失敗しました。\n{exc}")
             self.log(f"OAuthログイン完了失敗: {exc}")
@@ -1299,6 +1495,7 @@ class App:
         speaker_id = self._current_speaker_id()
         self.worker = TimelineSpeaker(
             instance_url=instance,
+            backend=selected.get("backend", "mastodon"),
             access_token=selected["access_token"],
             voicevox_url=voicevox_url if use_voicevox else "",
             speaker_id=speaker_id,
