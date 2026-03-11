@@ -16,6 +16,26 @@ from typing import Any, Callable
 from urllib.parse import urlencode, urlsplit
 
 import requests
+
+
+def ensure_tk_env() -> None:
+    # Some Windows environments fail to locate Tcl/Tk when launched from
+    # non-ASCII working directories. Set explicit library paths early.
+    base_prefix = Path(sys.base_prefix)
+    tcl_root = base_prefix / "tcl"
+    tcl_lib = tcl_root / "tcl8.6"
+    tk_lib = tcl_root / "tk8.6"
+    dll_dir = base_prefix / "DLLs"
+    if "TCL_LIBRARY" not in os.environ and tcl_lib.exists():
+        os.environ["TCL_LIBRARY"] = str(tcl_lib)
+    if "TK_LIBRARY" not in os.environ and tk_lib.exists():
+        os.environ["TK_LIBRARY"] = str(tk_lib)
+    if dll_dir.exists():
+        os.environ["PATH"] = f"{dll_dir};{os.environ.get('PATH', '')}"
+
+
+ensure_tk_env()
+
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
