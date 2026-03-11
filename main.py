@@ -13,7 +13,7 @@ from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 import requests
 import tkinter as tk
@@ -71,7 +71,21 @@ def normalize_url(raw: str, default_scheme: str) -> str:
 
 
 def normalize_instance_url(raw: str) -> str:
-    return normalize_url(raw, "https")
+    value = normalize_url(raw, "https")
+    if not value:
+        return ""
+    parts = urlsplit(value)
+    host = (parts.hostname or "").strip().lower()
+    if not host:
+        return value
+
+    # mstdn.jp では media サブドメインのURLが共有されることがあり、
+    # それをOAuth先に使うと接続失敗するため本体ドメインへ補正する。
+    if host == "media.mstdn.jp":
+        host = "mstdn.jp"
+
+    port = f":{parts.port}" if parts.port else ""
+    return f"{parts.scheme or 'https'}://{host}{port}".rstrip("/")
 
 
 def normalize_voicevox_url(raw: str) -> str:
