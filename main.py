@@ -25,7 +25,10 @@ TAG_RE = re.compile(r"<[^>]+>")
 SPACE_RE = re.compile(r"\s+")
 URL_RE = re.compile(r"https?://[^\s]+", flags=re.IGNORECASE)
 URL_LIKE_RE = re.compile(r"\b(?:www\.)[^\s]+", flags=re.IGNORECASE)
-URL_LEADING_LINE_RE = re.compile(r"^\s*https?://\S.*$", flags=re.IGNORECASE | re.MULTILINE)
+URL_LEADING_LINE_RE = re.compile(
+    r"^\s*(?:https?://|www\.)\S.*$",
+    flags=re.IGNORECASE | re.MULTILINE,
+)
 QUOTE_STATUS_URL_RE = re.compile(
     r"https?://[^\s\"'<>]+(?:/@[^/\s\"'<>]+/\d+|/users/[^/\s\"'<>]+/statuses/\d+)",
     flags=re.IGNORECASE,
