@@ -192,7 +192,9 @@ class OAuthClient:
 
 
 def register_app(instance_url: str) -> OAuthClient:
-    base = instance_url.rstrip("/")
+    base = normalize_instance_url(instance_url).rstrip("/")
+    if not base:
+        raise ValueError("インスタンスURLが空です。")
     res = requests.post(
         f"{base}/api/v1/apps",
         data={
