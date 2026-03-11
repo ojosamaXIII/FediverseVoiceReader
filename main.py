@@ -48,6 +48,11 @@ EMOJI_RE = re.compile(
 )
 EMOJI_JOINER_RE = re.compile(r"[\u200d\ufe0f]")
 REDIRECT_URI = "urn:ietf:wg:oauth:2.0:oob"
+HTTP_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/134.0.0.0 Safari/537.36 FediverseVoiceReader/1.0"
+)
 
 
 def clean_text(raw_html: str) -> str:
@@ -203,10 +208,23 @@ def register_app(instance_url: str) -> OAuthClient:
             "scopes": "read",
             "website": "",
         },
+        headers={"Accept": "application/json", "User-Agent": HTTP_USER_AGENT},
+        allow_redirects=False,
         timeout=20,
     )
+    if 300 <= res.status_code < 400:
+        location = str(res.headers.get("Location", "")).strip()
+        raise requests.RequestException(
+            f"OAuthアプリ登録がリダイレクトされました ({res.status_code}): {location or '(Locationなし)'}"
+        )
     res.raise_for_status()
-    payload = res.json()
+    try:
+        payload = res.json()
+    except ValueError as exc:
+        snippet = res.text[:180].replace("\r", " ").replace("\n", " ")
+        raise requests.RequestException(
+            f"OAuthアプリ登録の応答がJSONではありません。status={res.status_code} body={snippet}"
+        ) from exc
     return OAuthClient(
         instance_url=base,
         client_id=payload["client_id"],
@@ -235,6 +253,7 @@ def exchange_code_for_token(client: OAuthClient, code: str) -> str:
             "redirect_uri": REDIRECT_URI,
             "scope": "read",
         },
+        headers={"Accept": "application/json", "User-Agent": HTTP_USER_AGENT},
         timeout=20,
     )
     res.raise_for_status()
@@ -245,7 +264,11 @@ def exchange_code_for_token(client: OAuthClient, code: str) -> str:
 def verify_account(instance_url: str, access_token: str) -> str:
     res = requests.get(
         f"{instance_url.rstrip('/')}/api/v1/accounts/verify_credentials",
-        headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json",
+            "User-Agent": HTTP_USER_AGENT,
+        },
         timeout=20,
     )
     res.raise_for_status()
