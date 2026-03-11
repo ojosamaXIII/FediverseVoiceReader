@@ -25,6 +25,7 @@ TAG_RE = re.compile(r"<[^>]+>")
 SPACE_RE = re.compile(r"\s+")
 URL_RE = re.compile(r"https?://[^\s]+", flags=re.IGNORECASE)
 URL_LIKE_RE = re.compile(r"\b(?:www\.)[^\s]+", flags=re.IGNORECASE)
+URL_LEADING_LINE_RE = re.compile(r"^\s*https?://\S.*$", flags=re.IGNORECASE | re.MULTILINE)
 QUOTE_STATUS_URL_RE = re.compile(
     r"https?://[^\s\"'<>]+(?:/@[^/\s\"'<>]+/\d+|/users/[^/\s\"'<>]+/statuses/\d+)",
     flags=re.IGNORECASE,
@@ -58,6 +59,8 @@ HTTP_USER_AGENT = (
 def clean_text(raw_html: str) -> str:
     text = TAG_RE.sub(" ", raw_html or "")
     text = html.unescape(text)
+    # Omit whole lines that start with URL so they are not read aloud at all.
+    text = URL_LEADING_LINE_RE.sub(" ", text)
     text = URL_RE.sub(" URL省略 ", text)
     text = URL_LIKE_RE.sub(" URL省略 ", text)
     text = CUSTOM_EMOJI_RE.sub(" ", text)
