@@ -10,6 +10,7 @@ import requests
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
+from .bgm_player import BgmPlayerError
 from .common import (
     build_authorize_url,
     check_voicevox,
@@ -24,6 +25,85 @@ from .timeline_speaker import TimelineSpeaker
 
 
 class AppEventsMixin:
+    @staticmethod
+    def _clamp_bgm_volume(value: int) -> int:
+        return max(0, min(100, int(value)))
+
+    def _apply_bgm_volume(self) -> None:
+        try:
+            self.bgm_player.set_volume(int(self.bgm_volume_var.get()))
+        except BgmPlayerError as exc:
+            self.log(f"BGM音量適用失敗: {exc}")
+
+    def on_bgm_volume_changed(self, _value: Any = None) -> None:
+        self.bgm_volume_text_var.set(str(self._clamp_bgm_volume(self.bgm_volume_var.get())))
+        self._apply_bgm_volume()
+        self._save_current_config()
+
+    def on_bgm_volume_entry_commit(self, _event: Any = None) -> None:
+        raw = self.bgm_volume_text_var.get().strip()
+        try:
+            parsed = int(raw)
+        except ValueError:
+            parsed = self.bgm_volume_var.get()
+        normalized = self._clamp_bgm_volume(parsed)
+        self.bgm_volume_var.set(normalized)
+        self.bgm_volume_text_var.set(str(normalized))
+        self._apply_bgm_volume()
+        self._save_current_config()
+
+    def on_choose_bgm_file(self) -> None:
+        target = filedialog.askopenfilename(
+            title="BGM用MP3を選択",
+            filetypes=[("MP3 files", "*.mp3"), ("All files", "*.*")],
+        )
+        if not target:
+            return
+        self.bgm_path_var.set(target)
+        self._save_current_config()
+        try:
+            self.bgm_player.load(target)
+            self._apply_bgm_volume()
+            self.bgm_status_var.set("準備完了")
+            self.log(f"BGMファイルを選択: {target}")
+        except BgmPlayerError as exc:
+            self.bgm_status_var.set("読み込み失敗")
+            messagebox.showerror("BGMエラー", f"BGMファイルを読み込めませんでした。\n{exc}")
+            self.log(f"BGM読み込み失敗: {exc}")
+
+    def on_play_bgm(self) -> None:
+        target = self.bgm_path_var.get().strip()
+        if not target:
+            self.on_choose_bgm_file()
+            target = self.bgm_path_var.get().strip()
+            if not target:
+                return
+
+        try:
+            if self.bgm_player.loaded_path != target:
+                self.bgm_player.load(target)
+            self._apply_bgm_volume()
+            loop_enabled = bool(self.bgm_loop_var.get())
+            self.bgm_player.play(loop=loop_enabled)
+            self.bgm_status_var.set("再生中")
+            self._save_current_config()
+            mode = "ループ" if loop_enabled else "1回"
+            self.log(f"BGM再生開始 ({mode}): {target}")
+        except BgmPlayerError as exc:
+            self.bgm_status_var.set("再生失敗")
+            messagebox.showerror("BGMエラー", f"BGM再生に失敗しました。\n{exc}")
+            self.log(f"BGM再生失敗: {exc}")
+
+    def on_stop_bgm(self) -> None:
+        try:
+            self.bgm_player.stop()
+        except BgmPlayerError as exc:
+            self.log(f"BGM停止失敗: {exc}")
+            messagebox.showerror("BGMエラー", f"BGM停止に失敗しました。\n{exc}")
+            return
+        self.bgm_status_var.set("停止")
+        self.log("BGM再生を停止しました。")
+
     def on_account_selected(self, _event: Any = None) -> None:
         key = self.account_combo_var.get().strip()
         account = self.accounts.get(key)
@@ -359,5 +439,6 @@ class AppEventsMixin:
     def shutdown(self) -> None:
         if self.worker:
             self.worker.stop()
+        self.bgm_player.close()
         self._save_current_config()
 

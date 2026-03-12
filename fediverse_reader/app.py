@@ -7,6 +7,7 @@ import tkinter as tk
 from .app_config_mixin import AppConfigMixin
 from .app_events_mixin import AppEventsMixin
 from .app_ui_mixin import AppUiMixin
+from .bgm_player import BgmPlayer
 from .common import OAuthClient, logs_dir_path
 from .timeline_speaker import TimelineSpeaker
 
@@ -28,6 +29,7 @@ class App(AppUiMixin, AppConfigMixin, AppEventsMixin):
         self.dictionary_entries: list[dict[str, str]] = []
         self.ng_words: list[str] = []
         self.muted_accounts: list[str] = []
+        self.bgm_player = BgmPlayer()
         self.log_file_path = logs_dir_path() / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 
         self._build_ui()

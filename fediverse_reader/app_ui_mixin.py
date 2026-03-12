@@ -108,8 +108,54 @@ class AppUiMixin:
             row=19, column=1, sticky="w"
         )
 
+        self.bgm_path_var = tk.StringVar(value="")
+        self.bgm_loop_var = tk.BooleanVar(value=True)
+        self.bgm_volume_var = tk.IntVar(value=80)
+        self.bgm_volume_text_var = tk.StringVar(value="80")
+        self.bgm_status_var = tk.StringVar(value="未再生")
+        bgm_frame = ttk.LabelFrame(frm, text="作業用BGM (MP3)")
+        bgm_frame.grid(row=5, column=2, rowspan=15, sticky="nsew", padx=(16, 0))
+
+        ttk.Label(bgm_frame, text="ファイル").grid(row=0, column=0, sticky="w", padx=8, pady=(8, 2))
+        ttk.Entry(bgm_frame, textvariable=self.bgm_path_var, state="readonly", width=40).grid(
+            row=1, column=0, sticky="we", padx=8
+        )
+
+        bgm_btn_row = ttk.Frame(bgm_frame)
+        bgm_btn_row.grid(row=2, column=0, sticky="w", padx=8, pady=8)
+        ttk.Button(bgm_btn_row, text="MP3選択", command=self.on_choose_bgm_file).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(bgm_btn_row, text="再生", command=self.on_play_bgm).pack(side=tk.LEFT, padx=4)
+        ttk.Button(bgm_btn_row, text="停止", command=self.on_stop_bgm).pack(side=tk.LEFT, padx=4)
+
+        ttk.Checkbutton(
+            bgm_frame,
+            text="ループ再生",
+            variable=self.bgm_loop_var,
+            command=self._save_current_config,
+        ).grid(row=3, column=0, sticky="w", padx=8, pady=(0, 2))
+
+        volume_row = ttk.Frame(bgm_frame)
+        volume_row.grid(row=4, column=0, sticky="we", padx=8, pady=(0, 2))
+        ttk.Label(volume_row, text="音量").pack(side=tk.LEFT)
+        ttk.Scale(
+            volume_row,
+            from_=0,
+            to=100,
+            length=160,
+            orient=tk.HORIZONTAL,
+            variable=self.bgm_volume_var,
+            command=self.on_bgm_volume_changed,
+        ).pack(side=tk.LEFT, padx=(8, 8))
+        volume_entry = ttk.Entry(volume_row, textvariable=self.bgm_volume_text_var, width=4, justify=tk.RIGHT)
+        volume_entry.pack(side=tk.LEFT)
+        volume_entry.bind("<Return>", self.on_bgm_volume_entry_commit)
+        volume_entry.bind("<FocusOut>", self.on_bgm_volume_entry_commit)
+
+        ttk.Label(bgm_frame, textvariable=self.bgm_status_var).grid(row=5, column=0, sticky="w", padx=8, pady=(0, 8))
+        bgm_frame.columnconfigure(0, weight=1)
+
         step_row = ttk.Frame(frm)
-        step_row.grid(row=20, column=0, columnspan=2, pady=(8, 8), sticky="we")
+        step_row.grid(row=20, column=0, columnspan=3, pady=(8, 8), sticky="we")
         ttk.Button(step_row, text="辞書設定", command=self.on_open_dictionary_editor).pack(side=tk.LEFT, padx=4)
         ttk.Button(step_row, text="ミュート/NG設定", command=self.on_open_filter_editor).pack(side=tk.LEFT, padx=4)
         ttk.Button(step_row, text="1) VOICEVOX確認", command=self.on_check_voicevox).pack(side=tk.LEFT, padx=4)
@@ -123,7 +169,7 @@ class AppUiMixin:
         )
 
         run_row = ttk.Frame(frm)
-        run_row.grid(row=23, column=0, columnspan=2, sticky="we", pady=(4, 8))
+        run_row.grid(row=23, column=0, columnspan=3, sticky="we", pady=(4, 8))
         self.start_btn = ttk.Button(run_row, text="3) 読み上げ開始", command=self.on_start_reading)
         self.start_btn.pack(side=tk.LEFT, padx=4)
         self.stop_btn = ttk.Button(run_row, text="停止", command=self.on_stop_reading, state=tk.DISABLED)
@@ -134,12 +180,13 @@ class AppUiMixin:
         )
 
         self.status_var = tk.StringVar(value="未ログイン")
-        ttk.Label(frm, textvariable=self.status_var).grid(row=24, column=0, columnspan=2, sticky="w")
+        ttk.Label(frm, textvariable=self.status_var).grid(row=24, column=0, columnspan=3, sticky="w")
 
         self.log_widget = scrolledtext.ScrolledText(frm, height=20, wrap=tk.WORD, state=tk.DISABLED)
-        self.log_widget.grid(row=25, column=0, columnspan=2, sticky="nsew")
+        self.log_widget.grid(row=25, column=0, columnspan=3, sticky="nsew")
 
         frm.columnconfigure(1, weight=1)
+        frm.columnconfigure(2, weight=1)
         frm.rowconfigure(25, weight=1)
 
     def _bind_runtime_setting_watchers(self) -> None:

@@ -90,6 +90,9 @@ class AppConfigMixin:
             "instance_url": normalize_instance_url(self.instance_var.get().strip()),
             "voicevox_url": normalize_voicevox_url(self.voicevox_var.get().strip()),
             "speaker_id": self._current_speaker_id(),
+            "bgm_path": self.bgm_path_var.get().strip(),
+            "bgm_loop": self.bgm_loop_var.get(),
+            "bgm_volume": int(self.bgm_volume_var.get()),
             "poll_interval_sec": self.poll_var.get().strip(),
             "fetch_limit": self.limit_var.get().strip(),
             "timeline_kind": timeline_label_to_kind(self.timeline_kind_var.get().strip()),
@@ -125,6 +128,14 @@ class AppConfigMixin:
             self.selected_speaker_id = 3
         self.instance_var.set(normalize_instance_url(str(cfg.get("instance_url", self.instance_var.get()))))
         self.voicevox_var.set(normalize_voicevox_url(str(cfg.get("voicevox_url", self.voicevox_var.get()))))
+        self.bgm_path_var.set(str(cfg.get("bgm_path", self.bgm_path_var.get())))
+        self.bgm_loop_var.set(bool(cfg.get("bgm_loop", True)))
+        try:
+            bgm_volume = int(cfg.get("bgm_volume", self.bgm_volume_var.get()))
+        except (TypeError, ValueError):
+            bgm_volume = int(self.bgm_volume_var.get())
+        self.bgm_volume_var.set(max(0, min(100, bgm_volume)))
+        self.bgm_volume_text_var.set(str(self.bgm_volume_var.get()))
         self.poll_var.set(str(cfg.get("poll_interval_sec", self.poll_var.get())))
         self.limit_var.set(str(cfg.get("fetch_limit", self.limit_var.get())))
         loaded_timeline_kind = str(cfg.get("timeline_kind", "local")).strip().lower()
@@ -152,6 +163,8 @@ class AppConfigMixin:
         self.ng_words = self._normalize_line_entries(cfg.get("ng_words", []))
         self.muted_accounts = self._normalize_line_entries(cfg.get("muted_accounts", []))
         self.accounts = self._normalize_accounts(cfg.get("accounts", {}))
+        if self.bgm_path_var.get().strip():
+            self.bgm_status_var.set("準備完了")
 
         # backward-compat: old single-account format
         legacy_token = str(cfg.get("access_token", "")).strip()
