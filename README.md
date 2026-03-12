@@ -58,6 +58,13 @@ cd "C:\path\to\Fediverse読み上げ"
 .\.venv\Scripts\python.exe -m PyInstaller --noconfirm --onefile --windowed --name FediverseVoiceReader --icon "FediverseVoiceReader.ico" --add-data "FediverseVoiceReader.ico;." --add-data "FediverseVoiceReader.png;." main.py
 ```
 
+または（推奨: リポジトリ設定に合わせる）:
+
+```powershell
+cd "C:\path\to\Fediverse読み上げ"
+.\.venv\Scripts\python.exe -m PyInstaller --noconfirm FediverseVoiceReader.spec
+```
+
 出力:
 
 - `dist\FediverseVoiceReader.exe`
@@ -70,7 +77,9 @@ cd "C:\path\to\Fediverse読み上げ"
 4. `2) ログイン開始` でブラウザ認証し、認可コードを貼り付けて `ログイン完了`
 5. アカウントを選択
 6. 必要に応じて読み上げ設定を調整
-7. `3) 読み上げ開始`
+7. 右側「作業用BGM」で `MP3選択` → `再生`（必要なら `停止`）
+8. BGM音量はバー操作、または数値欄をクリックして直接入力（0-100）
+9. `3) 読み上げ開始`
 
 ## 保存先と機密情報
 
